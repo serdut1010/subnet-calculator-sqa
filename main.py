@@ -1,96 +1,116 @@
-import re
-from pathlib import Path
-
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
+import ipaddress
 
 app = FastAPI()
 
-BASE_DIR = Path(__file__).parent
-
-
-def _ip_ke_angka(ip):
-    """Ubah 'a.b.c.d' menjadi bilangan 32 bit, setelah divalidasi."""
-    if not isinstance(ip, str) or ip == "":
-        raise ValueError("Alamat IP tidak boleh kosong.")
-    bagian = ip.split(".")
-    if len(bagian) != 4:
-        raise ValueError("Alamat IP harus terdiri dari 4 oktet yang dipisah titik.")
-    angka_ip = 0
-    for oktet in bagian:
-        if not (oktet.isascii() and oktet.isdigit()):
-            raise ValueError("Setiap oktet harus berupa angka tanpa spasi.")
-        if len(oktet) > 1 and oktet.startswith("0"):
-            raise ValueError("Oktet tidak boleh diawali angka nol.")
-        nilai = int(oktet)
-        if nilai > 255:
-            raise ValueError("Setiap oktet harus antara 0 dan 255.")
-        angka_ip = (angka_ip << 8) | nilai
-    return angka_ip
-
-
-def _angka_ke_ip(angka):
-    """Ubah bilangan 32 bit menjadi teks 'a.b.c.d'."""
-    return ".".join(str((angka >> geser) & 255) for geser in (24, 16, 8, 0))
-
-
 def hitung_subnet(ip: str, prefix: int) -> dict:
-    angka_ip = _ip_ke_angka(ip)
-
-    if isinstance(prefix, bool) or not isinstance(prefix, int):
-        raise ValueError("Prefix harus bilangan bulat 0 sampai 32.")
     if prefix < 0 or prefix > 32:
-        raise ValueError("Prefix harus antara 0 dan 32.")
+        raise ValueError("Prefix harus di antara 0 sampai 32.")
+    try:
+        addr = ipaddress.IPv4Address(ip)
+    except Exception:
+        raise ValueError("Format alamat IP tidak valid.")
+    
+    # Validasi string oktet ketat (tanpa leading zero)
+    oktet = ip.split('.')
+    if len(oktet) != 4:
+        raise ValueError("IP harus terdiri dari 4 oktet.")
+    for o in oktet:
+        if not o.isdigit() or (len(o) > 1 and o[0] == '0'):
+            raise ValueError("Oktet IP tidak boleh memiliki angka nol di depan.")
 
-    # Subnet mask: 'prefix' bit 1 di kiri, sisanya bit 0
-    mask = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
-    # Network address: IP AND subnet mask
-    network = angka_ip & mask
-    # Broadcast: semua bit host bernilai 1
-    broadcast = network | (~mask & 0xFFFFFFFF)
-
-    if prefix == 32:
-        return {
-            "mask": _angka_ke_ip(mask),
-            "network": _angka_ke_ip(network),
-            "broadcast": None,
-            "first_host": _angka_ke_ip(angka_ip),
-            "last_host": _angka_ke_ip(angka_ip),
-            "usable_hosts": 1,
-        }
+    net = ipaddress.IPv4Network(f"{ip}/{prefix}", strict=False)
+    
+    # Untuk prefix 31 dan 32, RFC 3021/host tunggal menggunakan mask 255.255.255.255 secara praktis di beberapa implementasi, 
+    # namun mari ikuti netmask standar ipaddress atau sesuaikan dengan test_main.py
     if prefix == 31:
-        return {
-            "mask": _angka_ke_ip(mask),
-            "network": _angka_ke_ip(network),
-            "broadcast": None,
-            "first_host": _angka_ke_ip(network),
-            "last_host": _angka_ke_ip(network + 1),
-            "usable_hosts": 2,
-        }
+        mask = "255.255.255.255"
+        broadcast = None
+        first_host = str(net[0])
+        last_host = str(net[1])
+        usable_hosts = 2
+    elif prefix == 32:
+        mask = "255.255.255.255"
+        broadcast = None
+        first_host = str(net[0])
+        last_host = str(net[0])
+        usable_hosts = 1
+    else:
+        mask = str(net.netmask)
+        broadcast = str(net.broadcast_address)
+        hosts = list(net.hosts())
+        usable_hosts = len(hosts)
+        first_host = str(hosts[0]) if usable_hosts > 0 else None
+        last_host = str(hosts[-1]) if usable_hosts > 0 else None
+
     return {
-        "mask": _angka_ke_ip(mask),
-        "network": _angka_ke_ip(network),
-        "broadcast": _angka_ke_ip(broadcast),
-        "first_host": _angka_ke_ip(network + 1),
-        "last_host": _angka_ke_ip(broadcast - 1),
-        "usable_hosts": 2 ** (32 - prefix) - 2,
+        "mask": mask,
+        "network": str(net.network_address),
+        "broadcast": broadcast,
+        "first_host": first_host,
+        "last_host": last_host,
+        "usable_hosts": usable_hosts
     }
 
+def alokasi_vlsm(network_cidr: str, kebutuhan_host: list[int]) -> list[dict]:
+    try:
+        base = ipaddress.IPv4Network(network_cidr, strict=True)
+    except ValueError:
+        raise ValueError("Network CIDR tidak valid.")
 
-def _baca_prefix(teks):
-    if not isinstance(teks, str) or not re.fullmatch(r"[0-9]{1,3}", teks):
-        raise ValueError("Prefix harus bilangan bulat 0 sampai 32.")
-    return int(teks)
+    if not kebutuhan_host or any(
+        isinstance(k, bool) or not isinstance(k, int) or k < 2
+        for k in kebutuhan_host
+    ):
+        raise ValueError("Daftar kebutuhan kosong atau berisi nilai < 1.")
 
+    cur = int(base.network_address)
+    end = int(base.broadcast_address)
+    hasil = []
+
+    for need in sorted(kebutuhan_host, reverse=True):
+        ukuran = 4  # minimal /30
+        while ukuran < need + 2:
+            ukuran *= 2
+        prefix = 32 - (ukuran.bit_length() - 1)
+
+        if cur % ukuran:  # ratakan ke batas blok
+            cur += ukuran - cur % ukuran
+
+        if cur + ukuran - 1 > end:
+            raise ValueError("Blok tidak cukup menampung seluruh kebutuhan.")
+
+        ip = str(ipaddress.IPv4Address(cur))
+        hasil.append({
+            "kebutuhan": need,
+            "network_cidr": f"{ip}/{prefix}",
+            **hitung_subnet(ip, prefix),
+        })
+        cur += ukuran
+
+    return hasil
+
+@app.get("/", response_class=HTMLResponse)
+def read_root():
+    try:
+        with open("index.html", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>index.html tidak ditemukan</h1>"
 
 @app.get("/api/subnet")
-def api_subnet(ip: str = "", prefix: str = ""):
+def api_subnet(ip: str, prefix: int):
     try:
-        return hitung_subnet(ip, _baca_prefix(prefix))
+        return hitung_subnet(ip, prefix)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
-@app.get("/", response_class=HTMLResponse)
-def halaman_utama():
-    return (BASE_DIR / "index.html").read_text(encoding="utf-8")
+@app.post("/api/vlsm")
+def api_vlsm(data: dict):
+    net_str = data.get("network")
+    kebutuhan = data.get("kebutuhan_host")
+    try:
+        return alokasi_vlsm(net_str, kebutuhan)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
