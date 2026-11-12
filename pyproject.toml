@@ -1,19 +1,12 @@
 [project]
 name = "subnet-calculator"
 version = "0.1.0"
-description = "Add your description here"
+description = "Kalkulator Subnet dan VLSM berbasis web untuk guru SMK TKJ"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi[standard]>=0.162.5",
 ]
-
-[project.scripts]
-subnet-calculator = "subnet_calculator:main"
-
-[build-system]
-requires = ["uv_build>=0.13.7,<0.14.0"]
-build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
