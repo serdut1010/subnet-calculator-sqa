@@ -60,7 +60,7 @@ def alokasi_vlsm(network_cidr: str, kebutuhan_host: list[int]) -> list[dict]:
         raise ValueError("Network CIDR tidak valid.")
 
     if not kebutuhan_host or any(
-        isinstance(k, bool) or not isinstance(k, int) or k < 2
+        isinstance(k, bool) or not isinstance(k, int) or k < 1
         for k in kebutuhan_host
     ):
         raise ValueError("Daftar kebutuhan kosong atau berisi nilai < 1.")

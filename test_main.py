@@ -76,7 +76,6 @@ def test_alokasi_vlsm_success(network_cidr, kebutuhan, expected_subnets):
         ("192.168.1.0/24", [200, 100]), # Tidak muat
         ("192.168.1.1/24", [10, 5]),    # Network CIDR tidak valid (bukan network address)
         ("192.168.1.0/24", []),         # Kosong
-        ("192.168.1.0/24", [10, 1]),    # Berisi nilai 1
     ]
 )
 def test_alokasi_vlsm_invalid(network_cidr, kebutuhan):
@@ -95,3 +94,9 @@ def test_api_vlsm_cases():
     response_err = client.post("/api/vlsm", json={"network": "192.168.1.0/24", "kebutuhan_host": [200, 100]})
     assert response_err.status_code == 400
     assert "detail" in response_err.json()
+
+def test_alokasi_vlsm_kebutuhan_satu():
+    # V05 di SPEC.md: kebutuhan 1 valid, blok minimal /30
+    from main import alokasi_vlsm
+    hasil = alokasi_vlsm("192.168.1.0/24", [1])
+    assert hasil[0]["network_cidr"] == "192.168.1.0/30"
